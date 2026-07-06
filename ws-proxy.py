@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-WebSocket <-> SSH proxy (Premium Kebal Payload Enhanced - Versi Final).
+WebSocket <-> SSH proxy (Premium Kebal Payload Enhanced - Versi Super Gesit).
 
 Menerima koneksi HTTP/WebSocket di suatu port. Script ini secara otomatis
 membuatkan WebSocket Key jika aplikasi mengirim payload kosong, dan melakukan
-pembersihan buffer (flush) dengan jeda waktu yang ditingkatkan (150ms) setelah 
-handshake sukses. 
+pembersihan buffer (flush) INSTAN tanpa jeda setelah handshake sukses. 
 
-Sangat stabil untuk membuang sisa teks manipulasi PATCH/Enhanced dari jaringan 
-seluler yang naik-turun, mencegah error Illegal Packet Size secara permanen.
+Mencegah aplikasi VPN mengirim ulang paket kotor akibat delay, sehingga 
+bebas dari error Illegal Packet Size secara permanen.
 """
 
 import asyncio
@@ -61,7 +60,6 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     log.info("Koneksi masuk dari %s", peer)
 
     try:
-        # Baca chunk awal sekaligus (Anti-stuck untuk double request/smuggling)
         raw_headers = await reader.read(4096)
         if not raw_headers:
             writer.close()
@@ -70,11 +68,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         headers = parse_headers(raw_headers)
         raw_text_lower = raw_headers.decode(errors="ignore").lower()
 
-        # Deteksi apakah client meminta koneksi WebSocket
         is_ws_upgrade = "upgrade: websocket" in raw_text_lower or headers.get("upgrade", "").lower() == "websocket"
 
         if is_ws_upgrade:
-            # Cari Sec-WebSocket-Key di header
             ws_key = headers.get("sec-websocket-key")
             if not ws_key and "sec-websocket-key:" in raw_text_lower:
                 try:
@@ -85,7 +81,6 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 except Exception:
                     pass
 
-            # Jika aplikasi client tidak mengirim Key (payload kosong), buatkan otomatis
             if not ws_key:
                 log.info("Client tidak mengirim Sec-WebSocket-Key. Membuat key otomatis...")
                 ws_key = base64.b64encode(secrets.token_bytes(16)).decode()
@@ -102,12 +97,10 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             response += "\r\n"
             writer.write(response.encode())
         else:
-            # Mode kompatibilitas HTTP biasa / CONNECT mentah
             writer.write(DEFAULT_RESPONSE.encode())
 
         await writer.drain()
 
-        # Sambungkan ke Core OpenSSH lokal (127.0.0.1:22)
         try:
             target_reader, target_writer = await asyncio.open_connection(
                 TARGET_HOST, TARGET_PORT
@@ -117,12 +110,12 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             writer.close()
             return
 
-        # --- TUNING PREMIUM FINAL: Jeda 150ms agar kebal total dari lonjakan ping seluler ---
+        # --- MODIFIKASI GESIT: Paksa tebas instan tanpa delay waktu ---
         try:
-            await asyncio.sleep(0.15)  # Memberikan waktu tunggu ideal bagi jaringan lambat
+            await asyncio.sleep(0)  # Langsung oper task tanpa nunggu internet lemot
             if hasattr(reader, '_buffer') and reader._buffer:
                 log.info("Membersihkan data kotor di buffer: %d bytes", len(reader._buffer))
-                reader._buffer.clear()  # Sapu bersih total sisa teks PATCH/HTTP 69 sebelum masuk SSH
+                reader._buffer.clear()
         except Exception as ex:
             log.debug("Gagal membersihkan buffer: %s", ex)
 
@@ -144,7 +137,6 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 except Exception:
                     pass
 
-        # Mulai jembatan data antara client dan OpenSSH
         await asyncio.gather(
             pipe(reader, target_writer),
             pipe(target_reader, writer),
@@ -163,7 +155,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 async def main():
     server = await asyncio.start_server(handle_client, LISTEN_HOST, LISTEN_PORT)
     log.info(
-        "WS proxy jalan di %s:%s -> forward ke %s:%s (Final Ultra Anti-DPI Active)",
+        "WS proxy jalan di %s:%s -> forward ke %s:%s (Super Instant Anti-DPI Active)",
         LISTEN_HOST, LISTEN_PORT, TARGET_HOST, TARGET_PORT,
     )
     async with server:
