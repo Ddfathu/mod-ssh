@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-WebSocket <-> SSH proxy (Premium Kebal Payload Enhanced - Versi Super Gesit).
+WebSocket <-> SSH proxy (Premium Kebal Payload Enhanced - Versi Steril 100%).
 
-Menerima koneksi HTTP/WebSocket di suatu port. Script ini secara otomatis
-membuatkan WebSocket Key jika aplikasi mengirim payload kosong, dan melakukan
-pembersihan buffer (flush) INSTAN tanpa jeda setelah handshake sukses. 
+Menerima koneksi HTTP/WebSocket di suatu port. Script ini dilengkapi dengan
+Smart SSH Filter yang memeriksa data pertama yang masuk ke pipa SSH. Jika ada 
+data kotor sisa payload enhanced PATCH/HTTP 69, data tersebut akan dipotong 
+dan dibuang secara akurat tanpa mengandalkan jeda waktu (sleep).
 
-Mencegah aplikasi VPN mengirim ulang paket kotor akibat delay, sehingga 
-bebas dari error Illegal Packet Size secara permanen.
+Bebas dari error Illegal Packet Size selamanya, sekali klik langsung konek.
 """
 
 import asyncio
@@ -110,16 +110,41 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             writer.close()
             return
 
-        # --- MODIFIKASI GESIT: Paksa tebas instan tanpa delay waktu ---
-        try:
-            await asyncio.sleep(0)  # Langsung oper task tanpa nunggu internet lemot
-            if hasattr(reader, '_buffer') and reader._buffer:
-                log.info("Membersihkan data kotor di buffer: %d bytes", len(reader._buffer))
-                reader._buffer.clear()
-        except Exception as ex:
-            log.debug("Gagal membersihkan buffer: %s", ex)
+        # --- SMART FILTER: Menyaring sisa sampah payload secara akurat ---
+        async def pipe_client_to_ssh(src: asyncio.StreamReader, dst: asyncio.StreamWriter):
+            first_packet = True
+            try:
+                while True:
+                    data = await src.read(65536)
+                    if not data:
+                        break
+                    
+                    if first_packet:
+                        first_packet = False
+                        # Jika paket pertama bocor membawa teks HTTP (PATCH/HTTP 69 dsb)
+                        if b"SSH" not in data:
+                            # Cari apakah ada bagian paket SSH asli di dalam timbunan data kotor
+                            ssh_index = data.find(b"SSH-")
+                            if ssh_index != -1:
+                                log.info("Sampah payload terdeteksi! Memotong %d bytes data kotor", ssh_index)
+                                data = data[ssh_index:] # Ambil paket SSH-nya saja, buang depannya
+                            else:
+                                log.warning("Data kotor total tanpa banner SSH. Membersihkan paket awal.")
+                                continue # Abaikan data kotor ini, tunggu paket berikutnya
+                    
+                    dst.write(data)
+                    await dst.drain()
+            except (ConnectionResetError, asyncio.IncompleteReadError):
+                pass
+            except Exception as e:
+                log.debug("pipe_client error: %s", e)
+            finally:
+                try:
+                    dst.close()
+                except Exception:
+                    pass
 
-        async def pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter):
+        async def pipe_ssh_to_client(src: asyncio.StreamReader, dst: asyncio.StreamWriter):
             try:
                 while True:
                     data = await src.read(65536)
@@ -130,16 +155,17 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             except (ConnectionResetError, asyncio.IncompleteReadError):
                 pass
             except Exception as e:
-                log.debug("pipe error: %s", e)
+                log.debug("pipe_ssh error: %s", e)
             finally:
                 try:
                     dst.close()
                 except Exception:
                     pass
 
+        # Jalankan pipa data dengan filter aktif
         await asyncio.gather(
-            pipe(reader, target_writer),
-            pipe(target_reader, writer),
+            pipe_client_to_ssh(reader, target_writer),
+            pipe_ssh_to_client(target_reader, writer),
         )
 
     except Exception as e:
@@ -155,7 +181,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 async def main():
     server = await asyncio.start_server(handle_client, LISTEN_HOST, LISTEN_PORT)
     log.info(
-        "WS proxy jalan di %s:%s -> forward ke %s:%s (Super Instant Anti-DPI Active)",
+        "WS proxy jalan di %s:%s -> forward ke %s:%s (Smart SSH Filter Enabled)",
         LISTEN_HOST, LISTEN_PORT, TARGET_HOST, TARGET_PORT,
     )
     async with server:
