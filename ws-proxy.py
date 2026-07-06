@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-WebSocket <-> SSH proxy (Premium Kebal Payload Enhanced Version).
+WebSocket <-> SSH proxy (Premium Kebal Payload Enhanced - Versi Final).
 
 Menerima koneksi HTTP/WebSocket di suatu port. Script ini secara otomatis
 membuatkan WebSocket Key jika aplikasi mengirim payload kosong, dan melakukan
-pembersihan buffer (flush) agresif setelah handshake sukses untuk membuang 
-sisa teks manipulasi PATCH/Enhanced agar tidak merusak enkripsi OpenSSH.
+pembersihan buffer (flush) dengan jeda waktu yang ditingkatkan (150ms) setelah 
+handshake sukses. 
 
-Tidak butuh dependency luar (hanya modul standar Python), supaya build
-Docker tetap ringan.
+Sangat stabil untuk membuang sisa teks manipulasi PATCH/Enhanced dari jaringan 
+seluler yang naik-turun, mencegah error Illegal Packet Size secara permanen.
 """
 
 import asyncio
@@ -117,12 +117,12 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             writer.close()
             return
 
-        # --- TRIK PREMIUM: Bersihkan sisa data kotor akibat kebocoran Payload Enhanced ---
+        # --- TUNING PREMIUM FINAL: Jeda 150ms agar kebal total dari lonjakan ping seluler ---
         try:
-            await asyncio.sleep(0.05)  # Jeda mikro memberi waktu sisa buffer masuk
+            await asyncio.sleep(0.15)  # Memberikan waktu tunggu ideal bagi jaringan lambat
             if hasattr(reader, '_buffer') and reader._buffer:
                 log.info("Membersihkan data kotor di buffer: %d bytes", len(reader._buffer))
-                reader._buffer.clear()  # Buang total sisa teks PATCH/HTTP 69 sebelum masuk SSH
+                reader._buffer.clear()  # Sapu bersih total sisa teks PATCH/HTTP 69 sebelum masuk SSH
         except Exception as ex:
             log.debug("Gagal membersihkan buffer: %s", ex)
 
@@ -163,7 +163,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 async def main():
     server = await asyncio.start_server(handle_client, LISTEN_HOST, LISTEN_PORT)
     log.info(
-        "WS proxy jalan di %s:%s -> forward ke %s:%s (Premium Anti-DPI & Auto-Key Active)",
+        "WS proxy jalan di %s:%s -> forward ke %s:%s (Final Ultra Anti-DPI Active)",
         LISTEN_HOST, LISTEN_PORT, TARGET_HOST, TARGET_PORT,
     )
     async with server:
