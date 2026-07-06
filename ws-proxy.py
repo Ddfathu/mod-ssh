@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-WebSocket <-> SSH proxy (Auto-Key Generator Version).
+WebSocket <-> SSH proxy (Premium Kebal Payload Enhanced Version).
 
-Menerima koneksi HTTP/WebSocket di suatu port. Jika client mengirim payload pendek
-tanpa Sec-WebSocket-Key, script ini akan otomatis membuatkan Key palsu yang valid
-agar lolos dari sensor Cloudflare Tunnel dan langsung tersambung ke SSH (127.0.0.1:22).
+Menerima koneksi HTTP/WebSocket di suatu port. Script ini secara otomatis
+membuatkan WebSocket Key jika aplikasi mengirim payload kosong, dan melakukan
+pembersihan buffer (flush) agresif setelah handshake sukses untuk membuang 
+sisa teks manipulasi PATCH/Enhanced agar tidak merusak enkripsi OpenSSH.
+
+Tidak butuh dependency luar (hanya modul standar Python), supaya build
+Docker tetap ringan.
 """
 
 import asyncio
@@ -22,6 +26,10 @@ LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = int(os.environ.get("WS_PORT", "8880"))
 TARGET_HOST = os.environ.get("WS_TARGET_HOST", "127.0.0.1")
 TARGET_PORT = int(os.environ.get("WS_TARGET_PORT", "22"))
+DEFAULT_RESPONSE = os.environ.get(
+    "WS_RESPONSE",
+    "HTTP/1.1 101 Switching Protocols\r\n\r\n",
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +61,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     log.info("Koneksi masuk dari %s", peer)
 
     try:
+        # Baca chunk awal sekaligus (Anti-stuck untuk double request/smuggling)
         raw_headers = await reader.read(4096)
         if not raw_headers:
             writer.close()
@@ -61,11 +70,11 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         headers = parse_headers(raw_headers)
         raw_text_lower = raw_headers.decode(errors="ignore").lower()
 
-        # Cek apakah ada request upgrade ke websocket
+        # Deteksi apakah client meminta koneksi WebSocket
         is_ws_upgrade = "upgrade: websocket" in raw_text_lower or headers.get("upgrade", "").lower() == "websocket"
 
         if is_ws_upgrade:
-            # --- MODIFIKASI UTAMA: Auto-Generate Key jika kosong di payload ---
+            # Cari Sec-WebSocket-Key di header
             ws_key = headers.get("sec-websocket-key")
             if not ws_key and "sec-websocket-key:" in raw_text_lower:
                 try:
@@ -76,7 +85,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 except Exception:
                     pass
 
-            # Jika aplikasi bener-bener gak ngirim Key, kita buatkan Key acak di sini
+            # Jika aplikasi client tidak mengirim Key (payload kosong), buatkan otomatis
             if not ws_key:
                 log.info("Client tidak mengirim Sec-WebSocket-Key. Membuat key otomatis...")
                 ws_key = base64.b64encode(secrets.token_bytes(16)).decode()
@@ -93,12 +102,12 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             response += "\r\n"
             writer.write(response.encode())
         else:
-            # Mode HTTP biasa / CONNECT mentah
-            writer.write(b"HTTP/1.1 101 Switching Protocols\r\n\r\n")
+            # Mode kompatibilitas HTTP biasa / CONNECT mentah
+            writer.write(DEFAULT_RESPONSE.encode())
 
         await writer.drain()
 
-        # Sambungkan ke SSH lokal (127.0.0.1:22)
+        # Sambungkan ke Core OpenSSH lokal (127.0.0.1:22)
         try:
             target_reader, target_writer = await asyncio.open_connection(
                 TARGET_HOST, TARGET_PORT
@@ -107,6 +116,15 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             log.error("Gagal konek ke target %s:%s -> %s", TARGET_HOST, TARGET_PORT, e)
             writer.close()
             return
+
+        # --- TRIK PREMIUM: Bersihkan sisa data kotor akibat kebocoran Payload Enhanced ---
+        try:
+            await asyncio.sleep(0.05)  # Jeda mikro memberi waktu sisa buffer masuk
+            if hasattr(reader, '_buffer') and reader._buffer:
+                log.info("Membersihkan data kotor di buffer: %d bytes", len(reader._buffer))
+                reader._buffer.clear()  # Buang total sisa teks PATCH/HTTP 69 sebelum masuk SSH
+        except Exception as ex:
+            log.debug("Gagal membersihkan buffer: %s", ex)
 
         async def pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter):
             try:
@@ -126,6 +144,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 except Exception:
                     pass
 
+        # Mulai jembatan data antara client dan OpenSSH
         await asyncio.gather(
             pipe(reader, target_writer),
             pipe(target_reader, writer),
@@ -144,7 +163,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 async def main():
     server = await asyncio.start_server(handle_client, LISTEN_HOST, LISTEN_PORT)
     log.info(
-        "WS proxy jalan di %s:%s -> forward ke %s:%s (Auto-Key Mode Active)",
+        "WS proxy jalan di %s:%s -> forward ke %s:%s (Premium Anti-DPI & Auto-Key Active)",
         LISTEN_HOST, LISTEN_PORT, TARGET_HOST, TARGET_PORT,
     )
     async with server:
